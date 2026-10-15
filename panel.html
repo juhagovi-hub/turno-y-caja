@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Turno y Caja · Panel</title>
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Work+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="page">
+
+  <!-- ================= Inicio de sesión ================= -->
+  <section id="loginView" class="panel login-card" hidden>
+    <div class="brand">
+      <svg viewBox="0 0 40 40" aria-hidden="true"><rect x="17" y="2" width="6" height="8" rx="2" fill="var(--brass)"/><rect x="10" y="9" width="20" height="26" rx="10" fill="var(--surface-2)" stroke="var(--border)" stroke-width="1.5"/><path d="M11 12 L29 32 M11 32 L29 12" stroke="var(--accent)" stroke-width="3.2" stroke-linecap="round"/><rect x="17" y="34" width="6" height="4" rx="1.5" fill="var(--brass)"/></svg>
+      <h1>Turno y Caja</h1>
+    </div>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tabLogin" aria-selected="true">Entrar</button>
+      <button type="button" role="tab" id="tabSignup" aria-selected="false">Crear cuenta</button>
+    </div>
+    <form id="authForm" class="list" novalidate>
+      <label class="field">Correo<input type="email" id="authEmail" autocomplete="email" required></label>
+      <label class="field">Contraseña<input type="password" id="authPassword" autocomplete="current-password" minlength="8" required></label>
+      <button type="submit" class="btn btn-accent btn-big" id="authSubmit">Entrar</button>
+      <button type="button" class="btn btn-ghost btn-small" id="forgotBtn">Olvidé mi contraseña</button>
+      <p class="hint" id="signupHint" hidden>Solo pueden crear cuenta los correos que un administrador haya invitado. Te llegará un correo para confirmar.</p>
+      <p class="status-line" id="authStatus" aria-live="polite"></p>
+    </form>
+    <form id="newPassForm" class="list" hidden>
+      <p class="hint">Escribe tu nueva contraseña.</p>
+      <label class="field">Nueva contraseña<input type="password" id="newPassword" autocomplete="new-password" minlength="8" required></label>
+      <button type="submit" class="btn btn-accent">Guardar contraseña</button>
+      <p class="status-line" id="newPassStatus"></p>
+    </form>
+  </section>
+
+  <section id="noAccessView" class="panel login-card" hidden>
+    <h2>Sin acceso</h2>
+    <p class="hint">Tu cuenta (<span id="noAccessEmail"></span>) no tiene acceso a esta barbería. Pídele a un administrador que te invite con este correo y vuelve a entrar.</p>
+    <button type="button" class="btn btn-ghost" data-logout>Salir</button>
+  </section>
+
+  <!-- ================= Panel ================= -->
+  <section id="appView" class="list" style="gap:16px;" hidden>
+    <div class="topbar">
+      <div class="brand">
+        <svg viewBox="0 0 40 40" aria-hidden="true"><rect x="17" y="2" width="6" height="8" rx="2" fill="var(--brass)"/><rect x="10" y="9" width="20" height="26" rx="10" fill="var(--surface-2)" stroke="var(--border)" stroke-width="1.5"/><path d="M11 12 L29 32 M11 32 L29 12" stroke="var(--accent)" stroke-width="3.2" stroke-linecap="round"/><rect x="17" y="34" width="6" height="4" rx="1.5" fill="var(--brass)"/></svg>
+        <h1 id="bizTitle">Turno y Caja<small id="whoAmI"></small></h1>
+      </div>
+      <div class="top-right">
+        <span class="sync-pill" id="syncPill" role="status">Conectando…</span>
+        <a class="btn btn-ghost btn-small" href="index.html" target="_blank" rel="noopener">Pantalla pública</a>
+        <button type="button" class="btn btn-ghost btn-small" data-logout>Salir</button>
+      </div>
+    </div>
+
+    <nav class="nav-chips" aria-label="Secciones">
+      <button type="button" data-goto="secFila">Fila</button>
+      <button type="button" data-goto="secCaja">Caja</button>
+      <button type="button" data-goto="secServicios">Servicios</button>
+      <button type="button" data-goto="secMetricas">Métricas</button>
+      <button type="button" data-goto="secClientes">Clientes</button>
+      <button type="button" data-goto="secReportes">Reportes</button>
+      <button type="button" data-goto="secRespaldo" data-admin>Respaldo</button>
+      <button type="button" data-goto="secEquipo" data-admin>Equipo</button>
+    </nav>
+
+    <div class="panel" id="secFila">
+      <h2>Agregar a la fila</h2>
+      <div class="row">
+        <input type="text" id="nameInput" placeholder="Nombre" autocomplete="off" maxlength="80">
+        <input type="tel" id="clientIdInput" placeholder="Celular (o cédula)" inputmode="numeric" autocomplete="off">
+        <button type="button" class="btn btn-accent btn-big" id="addBtn">+ Agregar</button>
+      </div>
+      <div class="client-hint" id="clientHint"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Fila actual</h2><span class="hint" id="queueEtaHint"></span></div>
+      <div class="list" id="queueList"><p class="empty-note">Cargando…</p></div>
+    </div>
+
+    <div class="panel" id="secCaja">
+      <div class="panel-head"><h2>Caja</h2><span class="hint">Recaudo = servicios cobrados + propinas</span></div>
+      <div class="stats-grid"><div class="stat-card" id="statToday"></div><div class="stat-card" id="statMonth"></div></div>
+      <h3>Ventas de hoy</h3>
+      <div class="list" id="todaySalesList"></div>
+    </div>
+
+    <div class="panel" id="secServicios">
+      <h2>Servicios y tarifas</h2>
+      <p class="hint">Cada cobro guarda el nombre y el precio del momento: cambiar una tarifa no altera ventas pasadas. Un servicio desactivado deja de aparecer al cobrar, pero sigue en el historial.</p>
+      <div class="list" id="servicesList"></div>
+      <div data-admin class="list">
+        <h3>Nuevo servicio</h3>
+        <div class="svc-row" style="background:transparent;">
+          <label class="field name">Nombre<input type="text" id="svcNameInput" placeholder="ej. Corte y barba"></label>
+          <label class="field">Precio (COP)<input type="number" id="svcPriceInput" inputmode="numeric" min="0" step="1000"></label>
+          <label class="field">Duración (min)<input type="number" id="svcDurInput" inputmode="numeric" min="0" step="5" placeholder="opcional"></label>
+          <div class="actions"><button type="button" class="btn btn-ghost btn-small" id="svcAddBtn">+ Agregar servicio</button></div>
+        </div>
+        <p class="form-error" id="svcError"></p>
+      </div>
+    </div>
+
+    <div class="panel" id="secMetricas">
+      <div class="panel-head">
+        <h2>Métricas de este mes</h2>
+        <div class="row"><span class="hint" id="metricsUpdated"></span><button type="button" class="btn btn-ghost btn-small" id="metricsRefresh">Actualizar</button></div>
+      </div>
+      <div class="kpis" id="kpis"></div>
+      <div class="metrics-grid">
+        <div class="list"><h3>Servicios por día de la semana</h3><div class="bar-chart" id="dowChart"></div></div>
+        <div class="list"><h3>Servicios por hora</h3><div class="bar-chart" id="hourChart"></div></div>
+      </div>
+      <div class="metrics-grid">
+        <div class="list"><h3>Clientes del mes</h3><div class="list" id="topClients"></div></div>
+        <div class="list"><h3>Servicios más vendidos</h3><div class="list" id="topServices"></div></div>
+      </div>
+      <p class="hint">Cuentan solo ventas válidas: no incluyen turnos retirados ni ventas anuladas.</p>
+    </div>
+
+    <div class="panel" id="secClientes">
+      <h2>Clientes</h2>
+      <div class="row">
+        <input type="text" id="clientSearchInput" placeholder="Nombre o celular / cédula" autocomplete="off">
+        <button type="button" class="btn btn-ghost btn-small" id="clientSearchBtn">Buscar</button>
+      </div>
+      <div class="list" id="clientSearchResult"></div>
+    </div>
+
+    <div class="panel" id="secReportes">
+      <h2>Reportes</h2>
+      <p class="hint">CSV para Excel o Google Sheets: resumen del periodo y detalle de cada venta (las anuladas aparecen marcadas y no suman). No incluye celulares ni cédulas.</p>
+      <div class="row">
+        <select id="reportType" aria-label="Periodo"><option value="dia">Diario</option><option value="semana">Semanal</option><option value="mes" selected>Mensual</option><option value="anio">Anual</option></select>
+        <input type="date" id="reportDate" aria-label="Fecha de referencia">
+        <select id="reportMethod" aria-label="Método de pago"><option value="">Todos los métodos</option><option value="efectivo">Solo efectivo</option><option value="tarjeta">Solo tarjeta</option><option value="transferencia">Solo transferencia</option></select>
+        <button type="button" class="btn btn-accent btn-small" id="reportBtn">Descargar reporte</button>
+      </div>
+      <p class="status-line" id="reportStatus"></p>
+    </div>
+
+    <div class="panel" id="secRespaldo" data-admin>
+      <h2>Respaldo</h2>
+      <p class="hint">Descarga una copia completa (servicios, clientes, turnos, ventas y pagos). Guárdala en tu Drive. Recomendado: una vez por semana.</p>
+      <div class="row"><button type="button" class="btn btn-ghost btn-small" id="backupBtn">Descargar respaldo</button></div>
+      <h3>Restaurar desde un respaldo</h3>
+      <p class="hint">Agrega lo que falte desde el archivo. No borra ni reemplaza nada de lo que ya existe, y repetirlo no duplica ventas.</p>
+      <div class="row"><input type="file" id="restoreFile" accept=".json,application/json"></div>
+      <div class="list" id="restorePreview"></div>
+      <p class="status-line" id="backupStatus"></p>
+    </div>
+
+    <div class="panel" id="secEquipo" data-admin>
+      <h2>Equipo</h2>
+      <p class="hint">Invita por correo. La persona entra a este panel, elige "Crear cuenta" con ese mismo correo y confirma el mensaje que le llega. Los administradores pueden cambiar tarifas, anular ventas y ver el registro de cambios; los barberos solo atienden y cobran.</p>
+      <div class="list" id="teamList"></div>
+      <div class="row">
+        <input type="email" id="inviteEmail" placeholder="correo@ejemplo.com">
+        <input type="text" id="inviteName" placeholder="Nombre">
+        <select id="inviteRole" aria-label="Rol"><option value="admin">Administrador</option><option value="barber">Barbero</option></select>
+        <button type="button" class="btn btn-ghost btn-small" id="inviteBtn">Invitar</button>
+      </div>
+      <p class="status-line" id="inviteStatus"></p>
+    </div>
+
+    <footer class="note">Fechas y horas en hora de Colombia. La pantalla pública solo muestra número de turno y primer nombre.</footer>
+  </section>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="panel.js"></script>
+</body>
+</html>

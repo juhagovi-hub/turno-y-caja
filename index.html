@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fila de la barbería</title>
+<meta name="description" content="Mira en vivo quién está en atención y cuánto falta para tu turno.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Work+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="page">
+  <div class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 40 40" aria-hidden="true"><rect x="17" y="2" width="6" height="8" rx="2" fill="var(--brass)"/><rect x="10" y="9" width="20" height="26" rx="10" fill="var(--surface-2)" stroke="var(--border)" stroke-width="1.5"/><path d="M11 12 L29 32 M11 32 L29 12" stroke="var(--accent)" stroke-width="3.2" stroke-linecap="round"/><rect x="17" y="34" width="6" height="4" rx="1.5" fill="var(--brass)"/></svg>
+      <h1 id="bizName">Fila de la barbería<small>En vivo</small></h1>
+    </div>
+    <span class="sync-pill" id="syncPill" role="status">Conectando…</span>
+  </div>
+
+  <div class="panel now-serving">
+    <span class="eyebrow">Atendiendo ahora</span>
+    <div id="servingBlock"><div class="empty">Cargando la fila…</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>¿Cuál es tu turno?</h2>
+    <div class="my-turn">
+      <input type="number" id="myTurn" inputmode="numeric" min="1" placeholder="#" aria-label="Tu número de turno">
+      <span class="my-turn-result" id="myTurnResult" aria-live="polite">Escribe tu número para ver cuánto te falta.</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>En espera</h2>
+    <div class="list" id="waitingList"></div>
+    <p class="hint" id="etaNote"></p>
+  </div>
+
+  <footer class="note">Solo se muestra el número de turno y el primer nombre. La página se actualiza sola. <span id="updatedAt"></span></footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+(function () {
+  "use strict";
+  var T = window.TYC, $ = function (id) { return document.getElementById(id); };
+  var client = T.makeClient(), board = null, failures = 0, lastOk = null;
+
+  try { var saved = localStorage.getItem("tyc-my-turn"); if (saved) $("myTurn").value = saved; } catch (e) {}
+
+  function etaFor(position, avg, startedAt) {
+    if (!avg) return null;
+    var remaining = startedAt ? Math.max(0, avg - (Date.now() - T.toMs(startedAt)) / 60000) : 0;
+    return Math.round(remaining + position * avg);
+  }
+  function render() {
+    var b = board;
+    if (!b) return;
+    $("bizName").innerHTML = T.esc(b.business) + "<small>Fila en vivo</small>";
+    document.title = "Fila · " + b.business;
+    var serving = (b.serving || [])[0];
+    $("servingBlock").innerHTML = serving
+      ? '<div class="turn-number">#' + T.esc(serving.turn) + '</div><div class="turn-name">' + T.esc(serving.name) + '</div>'
+      : '<div class="empty">Silla libre: el siguiente pasa de una</div>';
+    var waiting = b.waiting || [], mine = parseInt($("myTurn").value, 10);
+    $("waitingList").innerHTML = waiting.length ? waiting.map(function (w, i) {
+      var eta = etaFor(i, b.avg_minutes, serving && serving.started_at);
+      return '<div class="queue-row' + (w.turn === mine ? ' mine' : '') + '"><span class="num">#' + T.esc(w.turn) + '</span><span class="who">' + T.esc(w.name) + '</span>' +
+        (eta != null ? '<span class="eta">~' + eta + ' min</span>' : '') + '</div>';
+    }).join("") : '<p class="empty-note">No hay nadie esperando.</p>';
+    $("etaNote").textContent = b.avg_minutes ? "Los minutos son una estimación según la duración de las últimas atenciones; pueden variar." : "";
+
+    var res = $("myTurnResult");
+    if (!mine) res.textContent = "Escribe tu número para ver cuánto te falta.";
+    else if (serving && serving.turn === mine) res.textContent = "¡Es tu turno! Acércate a la silla.";
+    else {
+      var idx = waiting.findIndex(function (w) { return w.turn === mine; });
+      if (idx < 0) res.textContent = "Ese turno ya no está en la fila. Si crees que es un error, pregunta en la barbería.";
+      else {
+        var eta = etaFor(idx, b.avg_minutes, serving && serving.started_at);
+        res.textContent = (idx === 0 ? (serving ? "Eres el siguiente." : "Eres el siguiente: acércate.") : "Hay " + idx + (idx === 1 ? " persona" : " personas") + " antes que tú.") +
+          (eta != null ? " Faltan unos " + eta + " min." : "");
+      }
+    }
+  }
+  $("myTurn").addEventListener("input", function () {
+    try { localStorage.setItem("tyc-my-turn", $("myTurn").value); } catch (e) {}
+    render();
+  });
+
+  async function poll() {
+    if (!client) { $("syncPill").className = "sync-pill off"; $("syncPill").textContent = "Sin configurar"; $("servingBlock").innerHTML = '<div class="empty">La fila aún no está conectada.</div>'; return; }
+    try {
+      var r = await client.rpc("public_board", { p_slug: window.TYC_CONFIG.businessSlug });
+      if (r.error) throw r.error;
+      if (!r.data) throw new Error("Barbería no encontrada");
+      board = r.data; failures = 0; lastOk = Date.now();
+      $("syncPill").className = "sync-pill ok"; $("syncPill").textContent = "En vivo";
+      $("updatedAt").textContent = "Actualizado " + T.fmtTime(lastOk) + ".";
+      render();
+    } catch (e) {
+      failures++;
+      $("syncPill").className = "sync-pill off"; $("syncPill").textContent = "Reconectando…";
+      if (!board) $("servingBlock").innerHTML = '<div class="empty">No se pudo cargar la fila. Reintentando…</div>';
+    }
+  }
+  poll();
+  setInterval(function () { if (!document.hidden) poll(); }, 10000);
+  setInterval(render, 30000);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) poll(); });
+})();
+</script>
+</body>
+</html>
