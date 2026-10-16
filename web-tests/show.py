@@ -36,7 +36,7 @@ with sync_playwright() as p:
     pg = br.new_page(viewport={"width": 1280, "height": 900}); prep(pg)
     pg.goto(f"http://127.0.0.1:{PORT}/panel.html"); pg.wait_for_timeout(800)
     pg.click('[data-a="openCo"]'); pg.wait_for_timeout(150)
-    pg.select_option(".co-service", label="Corte y barba — $32.000"); pg.wait_for_timeout(150)
+    pg.click('.svc-chip[data-svc="s2"]'); pg.wait_for_timeout(150)
     pg.fill(".co-tip", "3000"); pg.click('.method-btn[data-method="transferencia"]'); pg.wait_for_timeout(150)
     pg.locator("#secFila").scroll_into_view_if_needed()
     pg.screenshot(path=str(OUT / "3-panel-fila-y-cobro.png"), clip={"x": 0, "y": 0, "width": 1280, "height": 1250}, full_page=True)

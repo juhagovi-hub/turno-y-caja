@@ -260,11 +260,13 @@
   }
   function checkoutHtml(id) {
     var d = getDraft(id), t = totals(d), b = S.busy["co:" + id];
-    var opts = activeServices().map(function (s) { return '<option value="' + T.esc(s.id) + '"' + (d.serviceId === s.id ? " selected" : "") + ">" + T.esc(s.name) + " — " + T.money(s.price) + "</option>"; }).join("") +
-      '<option value="otro"' + (d.serviceId === "otro" ? " selected" : "") + ">Otro (precio manual)</option>";
-    return '<div class="checkout"><div class="co-grid">' +
-      '<label class="field">Servicio<select class="co-service">' + opts + "</select></label>" +
-      (d.serviceId === "otro" ? '<label class="field">Nombre del servicio<input type="text" class="co-name" value="' + T.esc(d.customName) + '" placeholder="ej. Cejas"></label>' : "") +
+    var chips = activeServices().map(function (s) {
+      return '<button type="button" class="svc-chip" data-svc="' + T.esc(s.id) + '" aria-pressed="' + (d.serviceId === s.id) + '"><span>' + T.esc(s.name) + "</span><strong>" + T.money(s.price) + "</strong></button>";
+    }).join("") + '<button type="button" class="svc-chip otro" data-svc="otro" aria-pressed="' + (d.serviceId === "otro") + '"><span>Otro</span><strong>precio manual</strong></button>';
+    return '<div class="checkout"><span class="field">Servicio</span><div class="svc-chips" role="group" aria-label="Servicio">' + chips + "</div>" +
+      (activeServices().length ? "" : '<p class="hint">Aún no hay servicios guardados. Créalos en "Servicios y tarifas" para elegirlos aquí con un toque.</p>') +
+      '<div class="co-grid">' +
+      (d.serviceId === "otro" ? '<label class="field">Nombre del servicio<input type="text" class="co-name" value="' + T.esc(d.customName) + '" placeholder="ej. Diseño"></label>' : "") +
       '<label class="field">Precio<input type="number" class="co-price" inputmode="numeric" min="0" step="1000" value="' + T.esc(d.price) + '"' + (d.serviceId !== "otro" ? " readonly" : "") + "></label>" +
       '<label class="field">Descuento<input type="number" class="co-discount" inputmode="numeric" min="0" step="1000" value="' + T.esc(d.discount) + '"></label>' +
       '<label class="field">Propina<input type="number" class="co-tip" inputmode="numeric" min="0" step="1000" value="' + T.esc(d.tip) + '"></label></div>' +
@@ -279,6 +281,11 @@
     var row = e.target.closest(".control-row"); if (!row) return;
     var id = row.dataset.id, a = btn.dataset.a;
     if (btn.classList.contains("method-btn")) { getDraft(id).method = btn.dataset.method; renderQueue(true); return; }
+    if (btn.classList.contains("svc-chip")) {
+      var dr = getDraft(id), sv = S.services.find(function (x) { return x.id === btn.dataset.svc; });
+      dr.serviceId = btn.dataset.svc; dr.price = sv ? sv.price : ""; dr.error = "";
+      renderQueue(true); return;
+    }
     if (a === "start") turnAction(id, "start_turn", null);
     else if (a === "back") turnAction(id, "back_to_waiting", "Turno devuelto a la fila.");
     else if (a === "openRet") { S.open["ret:" + id] = true; renderQueue(true); }
@@ -525,7 +532,7 @@
       var pd = T.topKey(c.dows);
       return '<div class="rank-row"><span class="rank">#' + (i + 1) + '</span><span class="who"><span class="nm">' + T.esc(c.name) + '</span><span class="meta">' + T.money(c.spent) + (pd != null ? " · prefiere " + T.DOW_LABEL[pd] : "") + '</span></span><span class="count">' + c.visits + "</span></div>";
     }).join("") : '<p class="empty-note">Aún no hay clientes identificados este mes.</p>';
-    var svcs = Object.keys(s.byService).map(function (n) { return { name: n, count: s.byService[n].count, total: s.byService[n].total }; }).sort(function (a, b) { return b.count - a.count; }).slice(0, 5);
+    var svcs = Object.keys(s.byService).map(function (n) { return { name: s.byService[n].name, count: s.byService[n].count, total: s.byService[n].total }; }).sort(function (a, b) { return b.count - a.count; }).slice(0, 5);
     $("topServices").innerHTML = svcs.length ? svcs.map(function (v, i) {
       return '<div class="rank-row"><span class="rank">#' + (i + 1) + '</span><span class="who"><span class="nm">' + T.esc(v.name) + '</span><span class="meta">' + T.money(v.total) + '</span></span><span class="count">' + v.count + "</span></div>";
     }).join("") : '<p class="empty-note">Aún no hay ventas este mes.</p>';

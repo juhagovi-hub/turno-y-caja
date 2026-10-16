@@ -69,7 +69,8 @@
       if (x.dateKey) s.byDate[x.dateKey] = (s.byDate[x.dateKey] || 0) + 1;
       if (x.dow != null) s.byDow[x.dow] = (s.byDow[x.dow] || 0) + 1;
       if (x.hour != null) s.byHour[x.hour] = (s.byHour[x.hour] || 0) + 1;
-      var sv = s.byService[x.serviceName] || (s.byService[x.serviceName] = { count: 0, total: 0 });
+      var svKey = normName(x.serviceName); // "Corte" y "corte" cuentan como el mismo servicio
+      var sv = s.byService[svKey] || (s.byService[svKey] = { name: x.serviceName, count: 0, total: 0 });
       sv.count++; sv.total += x.amount;
       if (x.clientId) {
         var c = s.byClient[x.clientId] || (s.byClient[x.clientId] = { name: x.name || "Cliente", visits: 0, spent: 0, dows: {} });

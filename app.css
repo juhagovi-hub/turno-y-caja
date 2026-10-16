@@ -169,3 +169,13 @@ footer.note { padding: 12px 14px; border-radius: var(--radius); background: var(
 .turn-number { text-shadow: 0 2px 18px color-mix(in srgb, var(--accent) 35%, transparent); }
 .login-card .brand { flex-direction: column; text-align: center; }
 .login-card .brand img { width: 120px; height: 120px; border-radius: 16px; }
+
+/* ---------- Servicios como botones en el cobro ---------- */
+.svc-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.svc-chip { font: inherit; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); cursor: pointer; }
+.svc-chip span { font-weight: 700; font-size: .92rem; }
+.svc-chip strong { font-weight: 600; font-size: .82rem; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.svc-chip:hover { border-color: var(--brass); }
+.svc-chip[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+.svc-chip[aria-pressed="true"] strong { color: var(--brass); }
+.svc-chip.otro strong { font-style: italic; }
