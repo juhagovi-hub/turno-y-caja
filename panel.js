@@ -164,7 +164,7 @@
   /* ---------------- Carga de datos ---------------- */
   async function loadQueue() {
     try {
-      S.queue = await q(sb.from("turns").select("id,turn_number,display_name,client_id,client_type,status,arrived_at,started_at,barber_id,clients(identifier,tier)")
+      S.queue = await q(sb.from("turns").select("id,turn_number,display_name,client_id,client_type,status,arrived_at,started_at,barber_id,clients(identifier,tier,founder_until)")
         .eq("business_id", S.biz.id).in("status", ["esperando", "atendiendo"]).order("arrived_at", { ascending: true }).limit(200));
       Object.keys(S.drafts).forEach(function (k) { if (k.indexOf("void:") !== 0 && !S.queue.some(function (t) { return t.id === k; })) delete S.drafts[k]; });
       renderQueue();
@@ -234,7 +234,10 @@
     return { price: price, discount: discount, tierDisc: td, tip: tip, amount: price - td - discount, total: price - td - discount + tip };
   }
   function queueTurn(id) { return S.queue.find(function (x) { return x.id === id; }); }
-  function isFounder(t) { return !!(t && t.clients && t.clients.tier === "fundador"); }
+  // Fundador vigente: marcado como fundador y con vigencia (60 días desde la última visita o desde que se marcó).
+  function founderActive(c) { return !!(c && c.tier === "fundador" && c.founder_until && Date.parse(c.founder_until) > Date.now()); }
+  function founderExpired(c) { return !!(c && c.tier === "fundador" && !founderActive(c)); }
+  function isFounder(t) { return !!(t && founderActive(t.clients)); }
   // Descuento por tarifa fundador (solo informativo en pantalla: el servidor lo calcula y lo aplica).
   function founderDisc(id, d) {
     if (!isFounder(queueTurn(id)) || d.serviceId === "otro") return 0;
@@ -242,7 +245,7 @@
     return s && s.founder_price && s.founder_price < s.price ? s.price - s.founder_price : 0;
   }
   function renderQueue(force) {
-    var sig = JSON.stringify(S.queue.map(function (t) { return [t.id, t.status, t.display_name, t.clients && t.clients.tier]; })) + JSON.stringify(S.services.map(function (s) { return [s.id, s.price, s.active, s.founder_price]; })) + JSON.stringify(S.open) + JSON.stringify(S.busy);
+    var sig = JSON.stringify(S.queue.map(function (t) { return [t.id, t.status, t.display_name, t.clients && t.clients.tier, t.clients && t.clients.founder_until]; })) + JSON.stringify(S.services.map(function (s) { return [s.id, s.price, s.active, s.founder_price]; })) + JSON.stringify(S.open) + JSON.stringify(S.busy);
     if (!force && sig === S.lastQueueSig) return;
     S.lastQueueSig = sig;
     var avg = avgMinutes();
@@ -256,12 +259,12 @@
       var h = '<div class="control-row' + (serving ? " serving" : "") + '" data-id="' + T.esc(t.id) + '"><div class="top">' +
         '<span class="num">#' + T.esc(t.turn_number) + '</span><span class="who">' + T.esc(t.display_name || "Cliente") +
         '<small>' + (ident ? T.esc(T.maskId(ident)) + " · " : "") + "llegó " + T.esc(T.fmtTime(t.arrived_at)) + (t.started_at ? " · empezó " + T.esc(T.fmtTime(t.started_at)) : "") + '</small></span>' +
-        (isFounder(t) ? '<span class="state fundador">Fundador</span>' : "") +
+        (isFounder(t) ? '<span class="state fundador">Fundador</span>' : founderExpired(t.clients) ? '<span class="state vencido">Fundador vencido</span>' : "") +
         (t.client_type === "nuevo" ? '<span class="state nuevo">Nuevo</span>' : t.client_type === "recurrente" ? '<span class="state">Recurrente</span>' : "") +
         '<span class="state' + (serving ? " atendiendo" : "") + '">' + (serving ? "En atención" : "Esperando") + "</span></div><div class=\"actions\">";
       if (serving) h += '<button type="button" class="btn btn-accent" data-a="openCo"' + dis + '>Cobrar</button><button type="button" class="btn btn-ghost btn-small" data-a="back"' + dis + '>Devolver a la fila</button>';
       else h += '<button type="button" class="btn btn-ghost" data-a="start"' + ((hasServing || b) ? " disabled" : "") + '>Atender</button>';
-      if (S.isAdmin && t.client_id) h += '<button type="button" class="btn btn-ghost btn-small" data-a="tier" data-tier="' + (isFounder(t) ? "general" : "fundador") + '"' + dis + '>' + (isFounder(t) ? "Quitar fundador" : "Marcar fundador") + "</button>";
+      if (S.isAdmin && t.client_id) h += '<button type="button" class="btn btn-ghost btn-small" data-a="tier" data-tier="' + (isFounder(t) ? "general" : "fundador") + '"' + dis + '>' + (isFounder(t) ? "Quitar fundador" : founderExpired(t.clients) ? "Renovar fundador" : "Marcar fundador") + "</button>";
       h += '<button type="button" class="btn btn-ghost btn-small" data-a="openRet"' + dis + '>Retirar</button></div>';
       if (S.open["ret:" + t.id]) h += '<div class="actions"><span class="hint">¿Por qué sale de la fila?</span><button type="button" class="btn btn-ghost btn-small" data-a="ret" data-kind="retirado">Se fue</button><button type="button" class="btn btn-ghost btn-small" data-a="ret" data-kind="ausente">No estaba al llamarlo</button><button type="button" class="btn btn-ghost btn-small" data-a="closeRet">Cancelar</button></div>';
       if (serving && S.open["co:" + t.id]) h += checkoutHtml(t.id);
@@ -578,13 +581,14 @@
       for (var i = 1; i < hist.length; i++) gaps.push((T.toMs(hist[i].completedAt) - T.toMs(hist[i - 1].completedAt)) / 86400000);
       var avgGap = gaps.length ? Math.round(gaps.reduce(function (a, b) { return a + b; }, 0) / gaps.length) : null;
       var rows = hist.slice(-12).reverse().map(function (s) { return "<tr><td>" + T.esc(T.fmtDateTime(s.completedAt)) + "</td><td>" + T.esc(s.serviceName) + "</td><td>" + T.money(s.amount) + "</td><td>" + T.esc(T.METHOD_LABEL[s.method] || s.method) + "</td></tr>"; }).join("");
-      out.innerHTML = '<div class="client-card" data-client="' + T.esc(c.id) + '"><span class="nm">' + T.esc(c.name || "Cliente") + ' <span class="hint">' + T.esc(T.maskId(c.identifier)) + "</span>" + (c.tier === "fundador" ? ' <span class="state fundador">Fundador</span>' : "") + "</span>" +
+      out.innerHTML = '<div class="client-card" data-client="' + T.esc(c.id) + '"><span class="nm">' + T.esc(c.name || "Cliente") + ' <span class="hint">' + T.esc(T.maskId(c.identifier)) + "</span>" + (founderActive(c) ? ' <span class="state fundador">Fundador</span>' : founderExpired(c) ? ' <span class="state vencido">Fundador vencido</span>' : "") + "</span>" +
+        (founderActive(c) ? '<span class="row2">Tarifa fundador vigente hasta el ' + T.esc(T.fmtDate(c.founder_until)) + ". Se renueva sola con cada visita (vence a los 60 días sin venir).</span>" : "") +
         '<span class="row2">' + hist.length + (hist.length === 1 ? " visita" : " visitas") + " · gasto acumulado " + T.money(spent) + " · promedio " + T.money(hist.length ? spent / hist.length : 0) +
         (pd != null ? " · prefiere " + T.DOW_LABEL[pd] : "") + (avgGap != null ? (avgGap <= 1 ? " · viene casi a diario" : " · vuelve cada ~" + avgGap + " días") : "") + "</span>" +
         '<span class="row2">Primera visita: ' + T.esc(hist.length ? T.fmtDateTime(hist[0].completedAt) : "—") + " · última: " + T.esc(hist.length ? T.fmtDateTime(hist[hist.length - 1].completedAt) : "—") + "</span>" +
         (rows ? '<div class="table-wrap"><table class="mini-table"><thead><tr><th>Fecha</th><th>Servicio</th><th>Cobrado</th><th>Método</th></tr></thead><tbody>' + rows + "</tbody></table></div>" : "") +
         '<div class="row"><input type="text" class="edit-name" value="' + T.esc(c.name) + '" aria-label="Corregir nombre"><button type="button" class="btn btn-ghost btn-small" data-a="saveName">Corregir nombre</button></div>' +
-        (S.isAdmin ? '<div class="row"><button type="button" class="btn btn-ghost btn-small" data-a="tier" data-tier="' + (c.tier === "fundador" ? "general" : "fundador") + '">' + (c.tier === "fundador" ? "Quitar tarifa fundador" : "Marcar como cliente fundador") + "</button></div>" : "") + "</div>";
+        (S.isAdmin ? '<div class="row"><button type="button" class="btn btn-ghost btn-small" data-a="tier" data-tier="' + (founderActive(c) ? "general" : "fundador") + '">' + (founderActive(c) ? "Quitar tarifa fundador" : founderExpired(c) ? "Renovar tarifa fundador" : "Marcar como cliente fundador") + "</button></div>" : "") + "</div>";
     } catch (e) { out.innerHTML = '<p class="empty-note">' + T.esc(T.errText(e)) + "</p>"; }
   }
   $("clientSearchBtn").addEventListener("click", async function () {

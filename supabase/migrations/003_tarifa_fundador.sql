@@ -5,9 +5,12 @@
 --   * Al cobrar a un fundador, el servidor aplica la diferencia como descuento
 --     y la deja registrada aparte (tier_discount), para medir cuánto cuesta la medida.
 --   * Las ventas guardan el tipo de tarifa del momento (client_tier).
+--   * La tarifa fundador vence a los 60 días sin venir: cada cobro como fundador la renueva
+--     otros 60 días, y un administrador puede volver a marcarla (renueva).
 -- =====================================================================
 
 alter table public.clients  add column tier text not null default 'general' check (tier in ('fundador','general'));
+alter table public.clients  add column founder_until timestamptz;
 alter table public.services add column founder_price integer check (founder_price is null or founder_price > 0);
 alter table public.sales    add column client_tier text not null default 'general' check (client_tier in ('fundador','general'));
 alter table public.sales    add column tier_discount integer not null default 0 check (tier_discount >= 0);
@@ -25,8 +28,16 @@ begin
   if not found then raise exception 'Cliente no encontrado.' using errcode = 'P0002'; end if;
   perform public._require(r.business_id, true);
   v_old := r.tier;
+  -- Marcar fundador (o volver a marcarlo) da 60 días de vigencia desde hoy.
+  if p_tier = 'fundador' then
+    update public.clients set tier = 'fundador', founder_until = now() + interval '60 days', updated_at = now()
+      where id = p_client returning * into r;
+    perform public._audit(r.business_id, 'cliente_tarifa', 'cliente', r.id::text,
+      jsonb_build_object('tier', v_old), jsonb_build_object('tier', r.tier, 'founder_until', r.founder_until), '');
+    return r;
+  end if;
   if v_old = p_tier then return r; end if;
-  update public.clients set tier = p_tier, updated_at = now() where id = p_client returning * into r;
+  update public.clients set tier = p_tier, founder_until = null, updated_at = now() where id = p_client returning * into r;
   perform public._audit(r.business_id, 'cliente_tarifa', 'cliente', r.id::text,
     jsonb_build_object('tier', v_old), jsonb_build_object('tier', r.tier), '');
   return r;
@@ -80,7 +91,7 @@ declare
   t public.turns; s public.sales; v_svc public.services;
   v_list integer; v_name text; v_tz text; v_now timestamptz := now(); v_local timestamp; v_type text;
   v_discount integer := coalesce(p_discount, 0); v_tip integer := coalesce(p_tip, 0);
-  v_tier text := 'general'; v_tier_disc integer := 0;
+  v_tier text := 'general'; v_tier_disc integer := 0; v_until timestamptz;
 begin
   select * into t from public.turns where id = p_turn;
   if not found then raise exception 'Turno no encontrado.' using errcode = 'P0002'; end if;
@@ -115,8 +126,10 @@ begin
 
   -- Tarifa fundador: solo con cliente identificado, servicio guardado y tarifa definida.
   if t.client_id is not null then
-    select tier into v_tier from public.clients where id = t.client_id;
+    select tier, founder_until into v_tier, v_until from public.clients where id = t.client_id;
     v_tier := coalesce(v_tier, 'general');
+    -- La tarifa fundador vence: sin vigencia (más de 60 días sin venir) se cobra como cliente general.
+    if v_tier = 'fundador' and (v_until is null or v_until <= v_now) then v_tier := 'general'; end if;
   end if;
   if v_tier = 'fundador' and v_svc.founder_price is not null and v_svc.founder_price < v_list then
     v_tier_disc := v_list - v_svc.founder_price;
@@ -146,6 +159,10 @@ begin
 
   insert into public.sale_payments (sale_id, business_id, method, amount)
   values (s.id, t.business_id, p_method, s.amount + s.tip);
+
+  if v_tier = 'fundador' then
+    update public.clients set founder_until = v_now + interval '60 days' where id = t.client_id;
+  end if;
 
   update public.turns set status = 'finalizado', ended_at = v_now where id = t.id;
   return s;

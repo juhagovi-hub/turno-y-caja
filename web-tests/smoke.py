@@ -15,9 +15,9 @@ STUB = r"""
     businesses: [{id:"b1", name:"Barbería Tierra Linda", slug:"tierra-linda", timezone:"America/Bogota"}],
     services: [{id:"s1", name:"Corte", price:25000, founder_price:20000, duration_min:35, active:true, description:"", created_at:now},
                {id:"s2", name:"Corte y barba", price:32000, duration_min:45, active:true, description:"", created_at:now}],
-    turns: [{id:"t1", turn_number:1, display_name:"Julio Gómez", client_id:"c1", client_type:"recurrente", status:"atendiendo", arrived_at:now, started_at:now, barber_id:null, clients:{identifier:"3164893957", tier:"fundador"}},
+    turns: [{id:"t1", turn_number:1, display_name:"Julio Gómez", client_id:"c1", client_type:"recurrente", status:"atendiendo", arrived_at:now, started_at:now, barber_id:null, clients:{identifier:"3164893957", tier:"fundador", founder_until:new Date(Date.now()+30*864e5).toISOString()}},
             {id:"t2", turn_number:2, display_name:"<img src=x onerror=window.__xss=1>", client_id:null, client_type:"sin_id", status:"esperando", arrived_at:now, started_at:null, barber_id:null, clients:null},
-            {id:"t4", turn_number:4, display_name:"Andrés Mina", client_id:"c2", client_type:"recurrente", status:"esperando", arrived_at:now, started_at:null, barber_id:null, clients:{identifier:"3005551234", tier:"general"}},
+            {id:"t4", turn_number:4, display_name:"Andrés Mina", client_id:"c2", client_type:"recurrente", status:"esperando", arrived_at:now, started_at:null, barber_id:null, clients:{identifier:"3005551234", tier:"fundador", founder_until:new Date(Date.now()-864e5).toISOString()}},
             {id:"t5", turn_number:5, display_name:"Brayan", client_id:null, client_type:"nuevo", status:"esperando", arrived_at:now, started_at:null, barber_id:null, clients:null}],
     sales: [{id:"v1", status:"valida", client_id:"c1", client_name:"Julio Gómez", client_type:"nuevo", service_name:"Corte", list_price:25000, discount:0, amount:25000, tip:0,
              completed_at:now, started_at:now, arrived_at:now, local_date:today, local_hour:16, local_dow:4, void_reason:null, sale_payments:[{method:"efectivo", amount:25000}]},
@@ -134,6 +134,8 @@ with sync_playwright() as p:
         check("$58.000" in page.inner_text("#statToday"), f"[{width}px] Panel: caja de hoy suma servicios + propinas ($58.000)")
         check("$33.000" in page.inner_text("#statToday"), f"[{width}px] Panel: transferencia sumada en su método")
         check("fundador" in page.inner_text("#queueList").lower(), f"[{width}px] Panel: la fila marca al cliente fundador")
+        check("fundador vencido" in page.inner_text("#queueList").lower(), f"[{width}px] Panel: la fila muestra 'Fundador vencido' cuando pasaron los 60 días")
+        check("renovar fundador" in page.inner_text("#queueList").lower(), f"[{width}px] Panel: el administrador puede renovar un fundador vencido")
         check(page.locator('[data-a="tier"]').count() >= 2, f"[{width}px] Panel: el administrador ve el botón para marcar o quitar fundador")
         page.click('[data-a="openCo"]'); page.wait_for_timeout(100)
         check("$20.000" in page.inner_text('.svc-chip[data-svc="s1"]'), f"[{width}px] Panel: el cliente fundador ve la tarifa fundador en el servicio")

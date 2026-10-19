@@ -303,6 +303,30 @@ await test('Fundador sin tarifa definida en el servicio, o con precio manual, pa
   const s2 = await cobrar('Fabio Fundador', '3102220002', null, { customName: 'Diseño', customPrice: 10000 });
   assert.deepEqual([s2.discount, s2.tier_discount, s2.amount], [0, 0, 10000]);
 });
+await test('La tarifa fundador vence a los 60 días sin venir; volver a marcarla la renueva', async () => {
+  const c = (await as(owner, `select * from public.add_turn($1, 'Vera Vencida', '3103330003')`, [biz]))[0];
+  await as(owner, `select public.set_client_tier($1, 'fundador')`, [c.client_id]);
+  const u = (await as(owner, `select founder_until from public.clients where id = $1`, [c.client_id]))[0].founder_until;
+  const dias = (new Date(u) - Date.now()) / 86400000;
+  assert.ok(dias > 59.9 && dias <= 60, 'vigencia de 60 días: ' + dias);
+  // Simula 61 días sin venir: la vigencia ya pasó.
+  await db.query(`update public.clients set founder_until = now() - interval '1 day' where id = $1`, [c.client_id]);
+  await as(barber, `select public.start_turn($1)`, [c.id]);
+  const s = (await as(barber, `select * from public.checkout($1, $2, null, null, 0, 0, 'efectivo')`, [c.id, corte.id]))[0];
+  assert.deepEqual([s.tier_discount, s.amount, s.client_tier], [0, 25000, 'general']);
+  // Un administrador la renueva y el siguiente cobro vuelve a tener la tarifa, y la extiende otros 60 días.
+  await as(owner, `select public.set_client_tier($1, 'fundador')`, [c.client_id]);
+  const c2 = (await as(owner, `select * from public.add_turn($1, 'Vera Vencida', '3103330003')`, [biz]))[0];
+  await as(barber, `select public.start_turn($1)`, [c2.id]);
+  const s2 = (await as(barber, `select * from public.checkout($1, $2, null, null, 0, 0, 'efectivo')`, [c2.id, corte.id]))[0];
+  assert.deepEqual([s2.tier_discount, s2.amount, s2.client_tier], [5000, 20000, 'fundador']);
+  await db.query(`update public.clients set founder_until = now() + interval '5 days' where id = $1`, [c.client_id]);
+  const c3 = (await as(owner, `select * from public.add_turn($1, 'Vera Vencida', '3103330003')`, [biz]))[0];
+  await as(barber, `select public.start_turn($1)`, [c3.id]);
+  await as(barber, `select * from public.checkout($1, $2, null, null, 0, 0, 'efectivo')`, [c3.id, corte.id]);
+  const u2 = (await as(owner, `select founder_until from public.clients where id = $1`, [c.client_id]))[0].founder_until;
+  assert.ok((new Date(u2) - Date.now()) / 86400000 > 59, 'cada cobro renueva la vigencia');
+});
 await test('Cambiar el tipo de cliente o la tarifa no altera las ventas ya hechas', async () => {
   const cid = (await as(owner, `select id from public.clients where business_id = $1 and identifier = '3102220002'`, [biz]))[0].id;
   await as(owner, `select public.set_client_tier($1, 'general')`, [cid]);
