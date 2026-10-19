@@ -50,6 +50,7 @@
     return {
       id: r.id, status: r.status, turnId: r.turn_id, legacyId: r.legacy_id,
       clientId: r.client_id, name: r.client_name || "", clientType: r.client_type,
+      clientTier: r.client_tier || "general", tierDiscount: num(r.tier_discount),
       serviceId: r.service_id, serviceName: r.service_name, listPrice: num(r.list_price), discount: num(r.discount),
       amount: num(r.amount), tip: num(r.tip), pays: pays, method: methods.length === 1 ? methods[0] : "mixto",
       barberId: r.barber_id, arrivedAt: r.arrived_at, startedAt: r.started_at, completedAt: r.completed_at,
@@ -59,11 +60,12 @@
 
   // Un solo cálculo para pantalla y reportes: las cifras siempre coinciden.
   function summarize(sales) {
-    var s = { ventas: 0, propinas: 0, recaudo: 0, count: 0, nuevos: 0, recurrentes: 0, sinId: 0, anuladas: 0, descuentos: 0,
+    var s = { ventas: 0, propinas: 0, recaudo: 0, count: 0, nuevos: 0, recurrentes: 0, sinId: 0, anuladas: 0, descuentos: 0, tierDescuentos: 0, fundadores: 0,
       byMethod: { efectivo: 0, tarjeta: 0, transferencia: 0 }, byDate: {}, byDow: {}, byHour: {}, byService: {}, byClient: {} };
     sales.forEach(function (x) {
       if (x.status === "anulada") { s.anuladas++; return; }
       s.count++; s.ventas += x.amount; s.propinas += x.tip; s.descuentos += x.discount;
+      s.tierDescuentos += x.tierDiscount; if (x.clientTier === "fundador") s.fundadores++;
       x.pays.forEach(function (p) { var m = METHODS.indexOf(p.method) >= 0 ? p.method : "efectivo"; s.byMethod[m] += p.amount; s.recaudo += p.amount; });
       if (x.clientType === "nuevo") s.nuevos++; else if (x.clientType === "recurrente") s.recurrentes++; else s.sinId++;
       if (x.dateKey) s.byDate[x.dateKey] = (s.byDate[x.dateKey] || 0) + 1;

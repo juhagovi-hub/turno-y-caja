@@ -4,7 +4,9 @@ import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
 const MIG = new URL('../migrations/', import.meta.url);
-const backup = JSON.parse(readFileSync(new URL('../../../../tmp/claude-0/-home-claude/c14eaa0e-ea03-5ea1-be0d-f3b4131520e8/scratchpad/backup-v4/turno-y-caja-respaldo-2026-10-15.json', 'file:///'), 'utf8'));
+// Respaldo real del artifact (opcional: si no está en esta máquina, esas pruebas se omiten).
+let backup = null;
+try { backup = JSON.parse(readFileSync(process.env.BACKUP_JSON || new URL('../../../../tmp/claude-0/-home-claude/c14eaa0e-ea03-5ea1-be0d-f3b4131520e8/scratchpad/backup-v4/turno-y-caja-respaldo-2026-10-15.json', 'file:///'), 'utf8')); } catch { /* sin respaldo */ }
 
 async function makeDb() {
   const d = new PGlite();
@@ -19,6 +21,7 @@ async function makeDb() {
   `);
   await d.exec(readFileSync(new URL('001_turno_y_caja.sql', MIG), 'utf8'));
   await d.exec(readFileSync(new URL('002_seed.sql', MIG), 'utf8'));
+  await d.exec(readFileSync(new URL('003_tarifa_fundador.sql', MIG), 'utf8'));
   return d;
 }
 const db = await makeDb();
@@ -243,8 +246,98 @@ await test('Una venta a las 10:30 p. m. de Colombia queda en ese día (no en el 
   assert.equal(r.rows[0].d.toISOString().slice(0, 10), '2026-10-15'); assert.equal(r.rows[0].h, 22);
 });
 
+
+// Tarifa fundador
+await test('Tarifa fundador: debe ser menor que el precio de lista y solo la define un administrador', async () => {
+  await rejects(as(owner, `select public.save_service($1, $2, 'Corte', '', 25000, 35, true, 25000)`, [biz, corte.id]), /menor que el precio/);
+  await rejects(as(barber, `select public.save_service($1, $2, 'Corte', '', 25000, 35, true, 20000)`, [biz, corte.id]), /administrador/);
+  const r = (await as(owner, `select * from public.save_service($1, $2, 'Corte', '', 25000, 35, true, 20000)`, [biz, corte.id]))[0];
+  assert.equal(r.founder_price, 20000); assert.equal(r.price, 25000);
+});
+await test('Solo un administrador cambia el tipo de cliente, y queda en el rastro de auditoría', async () => {
+  const cid = (await as(owner, `select id from public.clients where business_id = $1 and identifier = '3001112233'`, [biz]))[0].id;
+  await rejects(as(barber, `select public.set_client_tier($1, 'fundador')`, [cid]), /administrador/);
+  await rejects(as(owner, `select public.set_client_tier($1, 'vip')`, [cid]), /fundador o general/);
+  const r = (await as(friend, `select * from public.set_client_tier($1, 'fundador')`, [cid]))[0];
+  assert.equal(r.tier, 'fundador');
+  const a = await as(owner, `select count(*)::int n from public.audit_log where business_id = $1 and action = 'cliente_tarifa'`, [biz]);
+  assert.equal(a[0].n, 1);
+  await as(friend, `select public.set_client_tier($1, 'general')`, [cid]);
+});
+// Limpia turnos pendientes de pruebas anteriores para empezar la fila vacía.
+await db.query(`update public.turns set status = 'retirado', ended_at = now(), retire_reason = 'limpieza de prueba' where status in ('esperando','atendiendo')`);
+async function cobrar(name, ident, svc, opts = {}) {
+  const t = (await as(barber, `select * from public.add_turn($1, $2, $3)`, [biz, name, ident]))[0];
+  await as(barber, `select public.start_turn($1)`, [t.id]);
+  const s = (await as(barber, `select * from public.checkout($1, $2, $3, $4, $5, $6, 'efectivo')`,
+    [t.id, svc ? svc.id : null, opts.customName || null, opts.customPrice || null, opts.discount || 0, opts.tip || 0]))[0];
+  return s;
+}
+await test('Cliente general paga el precio de lista (sin descuento de tarifa)', async () => {
+  const s = await cobrar('Pedro General', '3101110001', corte);
+  assert.deepEqual([s.list_price, s.discount, s.tier_discount, s.amount, s.client_tier], [25000, 0, 0, 25000, 'general']);
+});
+await test('Cliente fundador paga la tarifa fundador; la diferencia queda registrada aparte', async () => {
+  const c = (await as(owner, `select * from public.add_turn($1, 'Fabio Fundador', '3102220002')`, [biz]))[0];
+  await as(owner, `select public.set_client_tier($1, 'fundador')`, [c.client_id]);
+  await as(barber, `select public.start_turn($1)`, [c.id]);
+  const s = (await as(barber, `select * from public.checkout($1, $2, null, null, 0, 2000, 'efectivo')`, [c.id, corte.id]))[0];
+  assert.deepEqual([s.list_price, s.discount, s.tier_discount, s.amount, s.tip, s.client_tier], [25000, 5000, 5000, 20000, 2000, 'fundador']);
+  const p = await as(owner, `select sum(amount)::int t from public.sale_payments where sale_id = $1`, [s.id]);
+  assert.equal(p[0].t, 22000);
+  // Cobrar de nuevo el mismo turno devuelve la misma venta y no duplica el descuento
+  const again = (await as(barber, `select * from public.checkout($1, $2, null, null, 0, 2000, 'efectivo')`, [c.id, corte.id]))[0];
+  assert.equal(again.id, s.id); assert.equal(again.discount, 5000);
+});
+await test('Fundador con descuento manual: se suman, y no pueden pasar del precio', async () => {
+  const c = (await as(owner, `select * from public.add_turn($1, 'Fabio Fundador', '3102220002')`, [biz]))[0];
+  await as(barber, `select public.start_turn($1)`, [c.id]);
+  await rejects(as(barber, `select public.checkout($1, $2, null, null, 20001, 0, 'efectivo')`, [c.id, corte.id]), /descuento no puede/);
+  const s = (await as(barber, `select * from public.checkout($1, $2, null, null, 1000, 0, 'efectivo')`, [c.id, corte.id]))[0];
+  assert.deepEqual([s.discount, s.tier_discount, s.amount], [6000, 5000, 19000]);
+});
+await test('Fundador sin tarifa definida en el servicio, o con precio manual, paga precio completo', async () => {
+  const cejas = (await as(owner, `select * from public.save_service($1, null, 'Cejas', '', 8000, 10, true)`, [biz]))[0];
+  const s1 = await cobrar('Fabio Fundador', '3102220002', cejas);
+  assert.deepEqual([s1.discount, s1.tier_discount, s1.amount, s1.client_tier], [0, 0, 8000, 'fundador']);
+  const s2 = await cobrar('Fabio Fundador', '3102220002', null, { customName: 'Diseño', customPrice: 10000 });
+  assert.deepEqual([s2.discount, s2.tier_discount, s2.amount], [0, 0, 10000]);
+});
+await test('La tarifa fundador vence a los 60 días sin venir; volver a marcarla la renueva', async () => {
+  const c = (await as(owner, `select * from public.add_turn($1, 'Vera Vencida', '3103330003')`, [biz]))[0];
+  await as(owner, `select public.set_client_tier($1, 'fundador')`, [c.client_id]);
+  const u = (await as(owner, `select founder_until from public.clients where id = $1`, [c.client_id]))[0].founder_until;
+  const dias = (new Date(u) - Date.now()) / 86400000;
+  assert.ok(dias > 59.9 && dias <= 60, 'vigencia de 60 días: ' + dias);
+  // Simula 61 días sin venir: la vigencia ya pasó.
+  await db.query(`update public.clients set founder_until = now() - interval '1 day' where id = $1`, [c.client_id]);
+  await as(barber, `select public.start_turn($1)`, [c.id]);
+  const s = (await as(barber, `select * from public.checkout($1, $2, null, null, 0, 0, 'efectivo')`, [c.id, corte.id]))[0];
+  assert.deepEqual([s.tier_discount, s.amount, s.client_tier], [0, 25000, 'general']);
+  // Un administrador la renueva y el siguiente cobro vuelve a tener la tarifa, y la extiende otros 60 días.
+  await as(owner, `select public.set_client_tier($1, 'fundador')`, [c.client_id]);
+  const c2 = (await as(owner, `select * from public.add_turn($1, 'Vera Vencida', '3103330003')`, [biz]))[0];
+  await as(barber, `select public.start_turn($1)`, [c2.id]);
+  const s2 = (await as(barber, `select * from public.checkout($1, $2, null, null, 0, 0, 'efectivo')`, [c2.id, corte.id]))[0];
+  assert.deepEqual([s2.tier_discount, s2.amount, s2.client_tier], [5000, 20000, 'fundador']);
+  await db.query(`update public.clients set founder_until = now() + interval '5 days' where id = $1`, [c.client_id]);
+  const c3 = (await as(owner, `select * from public.add_turn($1, 'Vera Vencida', '3103330003')`, [biz]))[0];
+  await as(barber, `select public.start_turn($1)`, [c3.id]);
+  await as(barber, `select * from public.checkout($1, $2, null, null, 0, 0, 'efectivo')`, [c3.id, corte.id]);
+  const u2 = (await as(owner, `select founder_until from public.clients where id = $1`, [c.client_id]))[0].founder_until;
+  assert.ok((new Date(u2) - Date.now()) / 86400000 > 59, 'cada cobro renueva la vigencia');
+});
+await test('Cambiar el tipo de cliente o la tarifa no altera las ventas ya hechas', async () => {
+  const cid = (await as(owner, `select id from public.clients where business_id = $1 and identifier = '3102220002'`, [biz]))[0].id;
+  await as(owner, `select public.set_client_tier($1, 'general')`, [cid]);
+  await as(owner, `select public.save_service($1, $2, 'Corte', '', 26000, 35, true, 21000)`, [biz, corte.id]);
+  const r = await as(owner, `select amount, list_price, client_tier from public.sales where client_id = $1 and service_name = 'Corte' order by completed_at limit 1`, [cid]);
+  assert.deepEqual([r[0].amount, r[0].list_price, r[0].client_tier], [20000, 25000, 'fundador']);
+  await as(owner, `select public.save_service($1, $2, 'Corte', '', 25000, 35, true, 20000)`, [biz, corte.id]);
+});
+
 // Prueba 12: importar el respaldo real del artifact (idempotente)
-await test('Importar el respaldo real: 3 ventas, $77.000, y repetirlo no duplica', async () => {
+if (backup) await test('Importar el respaldo real: 3 ventas, $77.000, y repetirlo no duplica', async () => {
   await rejects(as(barber, `select public.import_backup($1, $2::jsonb)`, [biz, JSON.stringify(backup)]), /administrador/);
   const r1 = (await as(owner, `select public.import_backup($1, $2::jsonb) r`, [biz, JSON.stringify(backup)]))[0].r;
   assert.equal(r1.sales, 3);

@@ -164,7 +164,7 @@
   /* ---------------- Carga de datos ---------------- */
   async function loadQueue() {
     try {
-      S.queue = await q(sb.from("turns").select("id,turn_number,display_name,client_id,client_type,status,arrived_at,started_at,barber_id,clients(identifier)")
+      S.queue = await q(sb.from("turns").select("id,turn_number,display_name,client_id,client_type,status,arrived_at,started_at,barber_id,clients(identifier,tier,founder_until)")
         .eq("business_id", S.biz.id).in("status", ["esperando", "atendiendo"]).order("arrived_at", { ascending: true }).limit(200));
       Object.keys(S.drafts).forEach(function (k) { if (k.indexOf("void:") !== 0 && !S.queue.some(function (t) { return t.id === k; })) delete S.drafts[k]; });
       renderQueue();
@@ -229,12 +229,23 @@
     }
     return d;
   }
-  function totals(d) {
-    var price = T.num(d.price), discount = T.num(d.discount), tip = T.num(d.tip);
-    return { price: price, discount: discount, tip: tip, amount: price - discount, total: price - discount + tip };
+  function totals(d, tierDisc) {
+    var price = T.num(d.price), discount = T.num(d.discount), tip = T.num(d.tip), td = tierDisc || 0;
+    return { price: price, discount: discount, tierDisc: td, tip: tip, amount: price - td - discount, total: price - td - discount + tip };
+  }
+  function queueTurn(id) { return S.queue.find(function (x) { return x.id === id; }); }
+  // Fundador vigente: marcado como fundador y con vigencia (60 días desde la última visita o desde que se marcó).
+  function founderActive(c) { return !!(c && c.tier === "fundador" && c.founder_until && Date.parse(c.founder_until) > Date.now()); }
+  function founderExpired(c) { return !!(c && c.tier === "fundador" && !founderActive(c)); }
+  function isFounder(t) { return !!(t && founderActive(t.clients)); }
+  // Descuento por tarifa fundador (solo informativo en pantalla: el servidor lo calcula y lo aplica).
+  function founderDisc(id, d) {
+    if (!isFounder(queueTurn(id)) || d.serviceId === "otro") return 0;
+    var s = S.services.find(function (x) { return x.id === d.serviceId; });
+    return s && s.founder_price && s.founder_price < s.price ? s.price - s.founder_price : 0;
   }
   function renderQueue(force) {
-    var sig = JSON.stringify(S.queue.map(function (t) { return [t.id, t.status, t.display_name]; })) + JSON.stringify(S.services.map(function (s) { return [s.id, s.price, s.active]; })) + JSON.stringify(S.open) + JSON.stringify(S.busy);
+    var sig = JSON.stringify(S.queue.map(function (t) { return [t.id, t.status, t.display_name, t.clients && t.clients.tier, t.clients && t.clients.founder_until]; })) + JSON.stringify(S.services.map(function (s) { return [s.id, s.price, s.active, s.founder_price]; })) + JSON.stringify(S.open) + JSON.stringify(S.busy);
     if (!force && sig === S.lastQueueSig) return;
     S.lastQueueSig = sig;
     var avg = avgMinutes();
@@ -248,10 +259,12 @@
       var h = '<div class="control-row' + (serving ? " serving" : "") + '" data-id="' + T.esc(t.id) + '"><div class="top">' +
         '<span class="num">#' + T.esc(t.turn_number) + '</span><span class="who">' + T.esc(t.display_name || "Cliente") +
         '<small>' + (ident ? T.esc(T.maskId(ident)) + " · " : "") + "llegó " + T.esc(T.fmtTime(t.arrived_at)) + (t.started_at ? " · empezó " + T.esc(T.fmtTime(t.started_at)) : "") + '</small></span>' +
+        (isFounder(t) ? '<span class="state fundador">Fundador</span>' : founderExpired(t.clients) ? '<span class="state vencido">Fundador vencido</span>' : "") +
         (t.client_type === "nuevo" ? '<span class="state nuevo">Nuevo</span>' : t.client_type === "recurrente" ? '<span class="state">Recurrente</span>' : "") +
         '<span class="state' + (serving ? " atendiendo" : "") + '">' + (serving ? "En atención" : "Esperando") + "</span></div><div class=\"actions\">";
       if (serving) h += '<button type="button" class="btn btn-accent" data-a="openCo"' + dis + '>Cobrar</button><button type="button" class="btn btn-ghost btn-small" data-a="back"' + dis + '>Devolver a la fila</button>';
       else h += '<button type="button" class="btn btn-ghost" data-a="start"' + ((hasServing || b) ? " disabled" : "") + '>Atender</button>';
+      if (S.isAdmin && t.client_id) h += '<button type="button" class="btn btn-ghost btn-small" data-a="tier" data-tier="' + (isFounder(t) ? "general" : "fundador") + '"' + dis + '>' + (isFounder(t) ? "Quitar fundador" : founderExpired(t.clients) ? "Renovar fundador" : "Marcar fundador") + "</button>";
       h += '<button type="button" class="btn btn-ghost btn-small" data-a="openRet"' + dis + '>Retirar</button></div>';
       if (S.open["ret:" + t.id]) h += '<div class="actions"><span class="hint">¿Por qué sale de la fila?</span><button type="button" class="btn btn-ghost btn-small" data-a="ret" data-kind="retirado">Se fue</button><button type="button" class="btn btn-ghost btn-small" data-a="ret" data-kind="ausente">No estaba al llamarlo</button><button type="button" class="btn btn-ghost btn-small" data-a="closeRet">Cancelar</button></div>';
       if (serving && S.open["co:" + t.id]) h += checkoutHtml(t.id);
@@ -259,11 +272,13 @@
     }).join("");
   }
   function checkoutHtml(id) {
-    var d = getDraft(id), t = totals(d), b = S.busy["co:" + id];
+    var d = getDraft(id), td = founderDisc(id, d), t = totals(d, td), b = S.busy["co:" + id], fund = isFounder(queueTurn(id));
     var chips = activeServices().map(function (s) {
-      return '<button type="button" class="svc-chip" data-svc="' + T.esc(s.id) + '" aria-pressed="' + (d.serviceId === s.id) + '"><span>' + T.esc(s.name) + "</span><strong>" + T.money(s.price) + "</strong></button>";
+      var fp = fund && s.founder_price && s.founder_price < s.price;
+      return '<button type="button" class="svc-chip" data-svc="' + T.esc(s.id) + '" aria-pressed="' + (d.serviceId === s.id) + '"><span>' + T.esc(s.name) + "</span><strong>" +
+        (fp ? T.money(s.founder_price) + ' <s class="hint">' + T.money(s.price) + "</s>" : T.money(s.price)) + "</strong></button>";
     }).join("") + '<button type="button" class="svc-chip otro" data-svc="otro" aria-pressed="' + (d.serviceId === "otro") + '"><span>Otro</span><strong>precio manual</strong></button>';
-    return '<div class="checkout"><span class="field">Servicio</span><div class="svc-chips" role="group" aria-label="Servicio">' + chips + "</div>" +
+    return '<div class="checkout">' + (fund ? '<p class="hint fundador-note">Cliente fundador: la tarifa fundador se aplica sola' + (td > 0 ? " (−" + T.money(td) + ")" : " (este servicio no tiene tarifa fundador)") + ".</p>" : "") + '<span class="field">Servicio</span><div class="svc-chips" role="group" aria-label="Servicio">' + chips + "</div>" +
       (activeServices().length ? "" : '<p class="hint">Aún no hay servicios guardados. Créalos en "Servicios y tarifas" para elegirlos aquí con un toque.</p>') +
       '<div class="co-grid">' +
       (d.serviceId === "otro" ? '<label class="field">Nombre del servicio<input type="text" class="co-name" value="' + T.esc(d.customName) + '" placeholder="ej. Diseño"></label>' : "") +
@@ -294,6 +309,7 @@
     else if (a === "openCo") { S.open["co:" + id] = true; renderQueue(true); }
     else if (a === "closeCo") { delete S.open["co:" + id]; renderQueue(true); }
     else if (a === "confirmCo") checkout(id);
+    else if (a === "tier") { var qt = queueTurn(id); if (qt && qt.client_id) setTier(qt.client_id, btn.dataset.tier, loadQueue); }
   });
   $("queueList").addEventListener("input", function (e) {
     var row = e.target.closest(".control-row"); if (!row) return;
@@ -303,7 +319,7 @@
     else if (c.contains("co-tip")) d.tip = e.target.value;
     else if (c.contains("co-name")) { d.customName = e.target.value; return; }
     else return;
-    var v = row.querySelector(".co-total-val"); if (v) v.textContent = T.money(totals(d).total);
+    var v = row.querySelector(".co-total-val"); if (v) v.textContent = T.money(totals(d, founderDisc(row.dataset.id, d)).total);
   });
   $("queueList").addEventListener("change", function (e) {
     if (!e.target.classList.contains("co-service")) return;
@@ -313,6 +329,17 @@
     d.price = s ? s.price : "";
     renderQueue(true);
   });
+
+  async function setTier(clientId, tier, after) {
+    var key = "tier:" + clientId; if (S.busy[key]) return;
+    S.busy[key] = true;
+    try {
+      await rpc("set_client_tier", { p_client: clientId, p_tier: tier });
+      toast(tier === "fundador" ? "Cliente marcado como fundador." : "Cliente marcado como general.");
+      if (after) await after();
+    } catch (e) { toast(T.errText(e), true); }
+    finally { delete S.busy[key]; }
+  }
 
   async function turnAction(id, fn, okMsg, extra) {
     var key = "q:" + id; if (S.busy[key]) return;
@@ -328,11 +355,11 @@
 
   async function checkout(id) {
     var key = "co:" + id; if (S.busy[key]) return;
-    var d = getDraft(id), t = totals(d);
+    var d = getDraft(id), t = totals(d, founderDisc(id, d));
     d.error = "";
     if (!(t.price > 0)) d.error = "El precio del servicio debe ser mayor que cero.";
     else if (t.discount < 0 || t.tip < 0) d.error = "El descuento y la propina no pueden ser negativos.";
-    else if (t.discount > t.price) d.error = "El descuento no puede ser mayor que el precio.";
+    else if (t.discount > t.price - t.tierDisc) d.error = "El descuento no puede ser mayor que el precio.";
     if (d.error) { renderQueue(true); return; }
     S.busy[key] = true; renderQueue(true);
     try {
@@ -411,7 +438,7 @@
     var legend = T.METHODS.map(function (m) { return '<div><span><span class="dot" style="background:var(--' + (m === "efectivo" ? "cash" : m === "tarjeta" ? "card" : "transfer") + ')"></span>' + T.METHOD_LABEL[m] + "</span><span>" + T.money(s.byMethod[m]) + "</span></div>"; }).join("");
     return "<h3>" + T.esc(title) + '</h3><div class="stat-total">' + T.money(total) + '</div><div class="split-bar">' + bars + '</div><div class="split-legend">' + legend + "</div>" +
       '<div class="stat-sub">' + s.count + (s.count === 1 ? " servicio" : " servicios") + " · ticket promedio " + T.money(s.ticket) +
-      (s.propinas > 0 ? " · propinas " + T.money(s.propinas) : "") + (s.descuentos > 0 ? " · descuentos " + T.money(s.descuentos) : "") + (extra || "") +
+      (s.propinas > 0 ? " · propinas " + T.money(s.propinas) : "") + (s.descuentos > 0 ? " · descuentos " + T.money(s.descuentos) + (s.tierDescuentos > 0 ? " (tarifa fundador " + T.money(s.tierDescuentos) + ")" : "") : "") + (extra || "") +
       (s.anuladas ? " · " + s.anuladas + (s.anuladas === 1 ? " anulada" : " anuladas") : "") + "</div>";
   }
   function renderCaja() {
@@ -476,6 +503,7 @@
         '<label class="field name">Nombre' + (s.active ? "" : " (desactivado)") + '<input type="text" class="svc-name" value="' + T.esc(s.name) + '"' + ro + "></label>" +
         '<label class="field">Precio (COP)<input type="number" class="svc-price" inputmode="numeric" min="0" step="1000" value="' + T.esc(s.price) + '"' + ro + "></label>" +
         '<label class="field">Duración (min)<input type="number" class="svc-dur" inputmode="numeric" min="0" step="5" value="' + T.esc(s.duration_min || "") + '"' + ro + "></label>" +
+        '<label class="field">Tarifa fundador<input type="number" class="svc-founder" inputmode="numeric" min="0" step="1000" placeholder="sin tarifa" value="' + T.esc(s.founder_price || "") + '"' + ro + "></label>" +
         (S.isAdmin ? '<div class="actions"><button type="button" class="btn btn-ghost btn-small" data-a="save">Guardar</button><button type="button" class="btn btn-ghost btn-small" data-a="toggle">' + (s.active ? "Desactivar" : "Activar") + "</button></div>" : "<div></div>") + "</div>";
     }).join("");
   }
@@ -483,13 +511,14 @@
     var btn = e.target.closest("button"); if (!btn || !S.isAdmin) return;
     var row = e.target.closest(".svc-row"), s = S.services.find(function (x) { return x.id === row.dataset.id; }); if (!s) return;
     var key = "svc:" + s.id; if (S.busy[key]) return;
-    var name = row.querySelector(".svc-name").value.trim(), price = T.num(row.querySelector(".svc-price").value), dur = T.num(row.querySelector(".svc-dur").value);
+    var name = row.querySelector(".svc-name").value.trim(), price = T.num(row.querySelector(".svc-price").value), dur = T.num(row.querySelector(".svc-dur").value), founder = T.num(row.querySelector(".svc-founder").value);
     var active = btn.dataset.a === "toggle" ? !s.active : s.active;
-    if (btn.dataset.a === "toggle") { name = s.name; price = s.price; dur = s.duration_min || 0; }
-    else if (name === s.name && price === s.price && dur === (s.duration_min || 0)) { toast("No hay cambios para guardar."); return; }
+    if (btn.dataset.a === "toggle") { name = s.name; price = s.price; dur = s.duration_min || 0; founder = s.founder_price || 0; }
+    else if (name === s.name && price === s.price && dur === (s.duration_min || 0) && founder === (s.founder_price || 0)) { toast("No hay cambios para guardar."); return; }
+    else if (founder > 0 && founder >= price) { toast("La tarifa fundador debe ser menor que el precio de lista.", true); return; }
     S.busy[key] = true; btn.disabled = true;
     try {
-      await rpc("save_service", { p_business: S.biz.id, p_id: s.id, p_name: name, p_description: s.description || "", p_price: Math.round(price), p_duration: Math.round(dur) || null, p_active: active });
+      await rpc("save_service", { p_business: S.biz.id, p_id: s.id, p_name: name, p_description: s.description || "", p_price: Math.round(price), p_duration: Math.round(dur) || null, p_active: active, p_founder_price: Math.round(founder) || null });
       if (document.activeElement) document.activeElement.blur();
       toast(btn.dataset.a === "toggle" ? (active ? "Servicio activado." : "Servicio desactivado.") : "Tarifa actualizada. Las ventas anteriores conservan su precio.");
       await loadServices();
@@ -497,14 +526,15 @@
     finally { delete S.busy[key]; btn.disabled = false; }
   });
   $("svcAddBtn").addEventListener("click", async function () {
-    var name = $("svcNameInput").value.trim(), price = T.num($("svcPriceInput").value), dur = T.num($("svcDurInput").value);
+    var name = $("svcNameInput").value.trim(), price = T.num($("svcPriceInput").value), dur = T.num($("svcDurInput").value), founder = T.num($("svcFounderInput").value);
     $("svcError").textContent = "";
     if (!name) { $("svcError").textContent = "Escribe el nombre del servicio."; return; }
     if (!(price > 0)) { $("svcError").textContent = "El precio debe ser mayor que cero."; return; }
+    if (founder > 0 && founder >= price) { $("svcError").textContent = "La tarifa fundador debe ser menor que el precio de lista."; return; }
     if (S.busy.svcAdd) return; S.busy.svcAdd = true; $("svcAddBtn").disabled = true;
     try {
-      await rpc("save_service", { p_business: S.biz.id, p_id: null, p_name: name, p_description: "", p_price: Math.round(price), p_duration: Math.round(dur) || null, p_active: true });
-      $("svcNameInput").value = ""; $("svcPriceInput").value = ""; $("svcDurInput").value = "";
+      await rpc("save_service", { p_business: S.biz.id, p_id: null, p_name: name, p_description: "", p_price: Math.round(price), p_duration: Math.round(dur) || null, p_active: true, p_founder_price: Math.round(founder) || null });
+      $("svcNameInput").value = ""; $("svcPriceInput").value = ""; $("svcDurInput").value = ""; $("svcFounderInput").value = "";
       toast("Servicio agregado."); await loadServices();
     } catch (e) { $("svcError").textContent = T.errText(e); }
     finally { S.busy.svcAdd = false; $("svcAddBtn").disabled = false; }
@@ -551,12 +581,14 @@
       for (var i = 1; i < hist.length; i++) gaps.push((T.toMs(hist[i].completedAt) - T.toMs(hist[i - 1].completedAt)) / 86400000);
       var avgGap = gaps.length ? Math.round(gaps.reduce(function (a, b) { return a + b; }, 0) / gaps.length) : null;
       var rows = hist.slice(-12).reverse().map(function (s) { return "<tr><td>" + T.esc(T.fmtDateTime(s.completedAt)) + "</td><td>" + T.esc(s.serviceName) + "</td><td>" + T.money(s.amount) + "</td><td>" + T.esc(T.METHOD_LABEL[s.method] || s.method) + "</td></tr>"; }).join("");
-      out.innerHTML = '<div class="client-card" data-client="' + T.esc(c.id) + '"><span class="nm">' + T.esc(c.name || "Cliente") + ' <span class="hint">' + T.esc(T.maskId(c.identifier)) + "</span></span>" +
+      out.innerHTML = '<div class="client-card" data-client="' + T.esc(c.id) + '"><span class="nm">' + T.esc(c.name || "Cliente") + ' <span class="hint">' + T.esc(T.maskId(c.identifier)) + "</span>" + (founderActive(c) ? ' <span class="state fundador">Fundador</span>' : founderExpired(c) ? ' <span class="state vencido">Fundador vencido</span>' : "") + "</span>" +
+        (founderActive(c) ? '<span class="row2">Tarifa fundador vigente hasta el ' + T.esc(T.fmtDate(c.founder_until)) + ". Se renueva sola con cada visita (vence a los 60 días sin venir).</span>" : "") +
         '<span class="row2">' + hist.length + (hist.length === 1 ? " visita" : " visitas") + " · gasto acumulado " + T.money(spent) + " · promedio " + T.money(hist.length ? spent / hist.length : 0) +
         (pd != null ? " · prefiere " + T.DOW_LABEL[pd] : "") + (avgGap != null ? (avgGap <= 1 ? " · viene casi a diario" : " · vuelve cada ~" + avgGap + " días") : "") + "</span>" +
         '<span class="row2">Primera visita: ' + T.esc(hist.length ? T.fmtDateTime(hist[0].completedAt) : "—") + " · última: " + T.esc(hist.length ? T.fmtDateTime(hist[hist.length - 1].completedAt) : "—") + "</span>" +
         (rows ? '<div class="table-wrap"><table class="mini-table"><thead><tr><th>Fecha</th><th>Servicio</th><th>Cobrado</th><th>Método</th></tr></thead><tbody>' + rows + "</tbody></table></div>" : "") +
-        '<div class="row"><input type="text" class="edit-name" value="' + T.esc(c.name) + '" aria-label="Corregir nombre"><button type="button" class="btn btn-ghost btn-small" data-a="saveName">Corregir nombre</button></div></div>';
+        '<div class="row"><input type="text" class="edit-name" value="' + T.esc(c.name) + '" aria-label="Corregir nombre"><button type="button" class="btn btn-ghost btn-small" data-a="saveName">Corregir nombre</button></div>' +
+        (S.isAdmin ? '<div class="row"><button type="button" class="btn btn-ghost btn-small" data-a="tier" data-tier="' + (founderActive(c) ? "general" : "fundador") + '">' + (founderActive(c) ? "Quitar tarifa fundador" : founderExpired(c) ? "Renovar tarifa fundador" : "Marcar como cliente fundador") + "</button></div>" : "") + "</div>";
     } catch (e) { out.innerHTML = '<p class="empty-note">' + T.esc(T.errText(e)) + "</p>"; }
   }
   $("clientSearchBtn").addEventListener("click", async function () {
@@ -574,6 +606,8 @@
   $("clientSearchInput").addEventListener("keydown", function (e) { if (e.key === "Enter") $("clientSearchBtn").click(); });
   $("clientSearchResult").addEventListener("click", async function (e) {
     var m = e.target.closest("[data-client-id]"); if (m) { showClient(m.dataset.clientId); return; }
+    var tb = e.target.closest('[data-a="tier"]');
+    if (tb) { var cc = tb.closest(".client-card"); setTier(cc.dataset.client, tb.dataset.tier, function () { return showClient(cc.dataset.client); }); return; }
     var b = e.target.closest('[data-a="saveName"]'); if (!b) return;
     var card = e.target.closest(".client-card"), name = card.querySelector(".edit-name").value.trim();
     if (!name) { toast("El nombre no puede quedar vacío.", true); return; }
@@ -597,7 +631,7 @@
       L.push(C(["Generado", T.fmtDateTime(Date.now()) + " (hora de Colombia) por " + S.user.email]));
       L.push("");
       L.push(C(["RESUMEN (solo ventas válidas)", "Valor"]));
-      [["Recaudo total (servicios + propinas)", Math.round(s.recaudo)], ["Ventas de servicios", Math.round(s.ventas)], ["Propinas", Math.round(s.propinas)], ["Descuentos otorgados", Math.round(s.descuentos)],
+      [["Recaudo total (servicios + propinas)", Math.round(s.recaudo)], ["Ventas de servicios", Math.round(s.ventas)], ["Propinas", Math.round(s.propinas)], ["Descuentos otorgados", Math.round(s.descuentos)], ["De ellos, por tarifa fundador", Math.round(s.tierDescuentos)], ["Servicios a clientes fundadores", s.fundadores],
        ["Efectivo", Math.round(s.byMethod.efectivo)], ["Tarjeta", Math.round(s.byMethod.tarjeta)], ["Transferencia", Math.round(s.byMethod.transferencia)],
        ["Servicios realizados", s.count], ["Ticket promedio", Math.round(s.ticket)], ["Clientes nuevos", s.nuevos], ["Visitas de clientes recurrentes", s.recurrentes],
        ["Servicios sin cliente identificado", s.sinId], ["Ventas anuladas (no suman)", s.anuladas],
@@ -607,11 +641,11 @@
        ["Cliente del periodo", topC ? topC.name + " (" + topC.visits + " visitas, " + T.money(topC.spent) + ")" : "Sin clientes identificados"]
       ].forEach(function (x) { L.push(C(x)); });
       L.push(""); L.push(C(["DETALLE"]));
-      L.push(C(["ID venta", "Fecha", "Hora", "Cliente", "Tipo de cliente", "Servicio", "Precio de lista", "Descuento", "Cobrado por servicio", "Propina", "Método", "Efectivo", "Tarjeta", "Transferencia", "Llegada", "Inicio", "Estado", "Motivo de anulación"]));
+      L.push(C(["ID venta", "Fecha", "Hora", "Cliente", "Tipo de cliente", "Servicio", "Precio de lista", "Descuento", "De ello: tarifa fundador", "Tarifa del cliente", "Cobrado por servicio", "Propina", "Método", "Efectivo", "Tarjeta", "Transferencia", "Llegada", "Inicio", "Estado", "Motivo de anulación"]));
       all.forEach(function (x) {
         var pm = { efectivo: 0, tarjeta: 0, transferencia: 0 }; x.pays.forEach(function (p) { if (pm[p.method] != null) pm[p.method] += p.amount; });
         L.push(C([x.id, T.fmtDate(x.completedAt), T.fmtTime(x.completedAt), x.name || "Cliente", x.clientType === "sin_id" ? "Sin identificar" : x.clientType, x.serviceName,
-          x.listPrice, x.discount, x.amount, x.tip, T.METHOD_LABEL[x.method] || x.method, pm.efectivo, pm.tarjeta, pm.transferencia,
+          x.listPrice, x.discount, x.tierDiscount, x.clientTier === "fundador" ? "Fundador" : "General", x.amount, x.tip, T.METHOD_LABEL[x.method] || x.method, pm.efectivo, pm.tarjeta, pm.transferencia,
           x.arrivedAt ? T.fmtTime(x.arrivedAt) : "", x.startedAt ? T.fmtTime(x.startedAt) : "", x.status === "anulada" ? "Anulada" : "Válida", x.voidReason]));
       });
       T.downloadFile("turno-y-caja-" + type + "-" + r.start + ".csv", "﻿" + L.join("\r\n"), "text/csv;charset=utf-8");
