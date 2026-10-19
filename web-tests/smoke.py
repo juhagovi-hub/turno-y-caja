@@ -50,6 +50,7 @@ STUB = r"""
     }
   })();
   window.__calls = [];
+  window.__session = window.__noSession ? null : {user:{id:"u1", email:"juhagovi@gmail.com"}};
   function builder(table){
     var single = false, filters = [];
     function rows(){
@@ -82,7 +83,8 @@ STUB = r"""
     import_backup: {sales:3, clients:1, services:2, skipped:0}, update_client_name: {}, set_client_tier: {}
   };
   window.supabase = { createClient: function(){ return {
-    auth: { getSession: function(){ return Promise.resolve({data:{session:{user:{id:"u1", email:"juhagovi@gmail.com"}}}}); },
+    auth: { getSession: function(){ return Promise.resolve({data:{session: window.__session}}); },
+            signInWithPassword: function(){ window.__session = {user:{id:"u1", email:"juhagovi@gmail.com"}}; return Promise.resolve({data:{session: window.__session}, error:null}); },
             onAuthStateChange: function(){ return {data:{subscription:{unsubscribe:function(){}}}}; },
             signOut: function(){ return Promise.resolve({}); } },
     from: builder,
@@ -157,6 +159,23 @@ with sync_playwright() as p:
         page.screenshot(path=str(ROOT / f"web-tests/panel-{width}.png"), full_page=True)
         check(not errors, f"[{width}px] Sin errores de JavaScript {errors}")
         page.close()
+    # Iniciar sesión con el formulario debe entrar al panel sin recargar la página
+    page = browser.new_page(viewport={"width": 390, "height": 900})
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.add_init_script("window.__noSession = true;")
+    page.route("**/supabase.js", lambda r: r.fulfill(status=200, content_type="application/javascript", body=STUB))
+    page.route("**/config.js", lambda r: r.fulfill(status=200, content_type="application/javascript",
+        body='window.TYC_CONFIG={supabaseUrl:"https://x.supabase.co",supabaseKey:"k",businessSlug:"tierra-linda"};'))
+    page.route("https://fonts.googleapis.com/**", lambda r: r.abort())
+    page.route("https://fonts.gstatic.com/**", lambda r: r.abort())
+    page.goto(f"http://127.0.0.1:{PORT}/panel.html"); page.wait_for_timeout(600)
+    check(page.is_visible("#loginView") and not page.is_visible("#appView"), "[login] Sin sesión muestra el formulario de entrada")
+    page.fill("#authEmail", "juhagovi@gmail.com"); page.fill("#authPassword", "contrasena-segura")
+    page.click("#authSubmit"); page.wait_for_timeout(900)
+    check(page.is_visible("#appView") and not page.is_visible("#loginView"), "[login] Al entrar con correo y contraseña abre el panel sin recargar")
+    check(not errors, f"[login] Sin errores de JavaScript {errors}")
+    page.close()
     browser.close()
 
 print(f"\n{'TODO OK' if not failures else str(len(failures)) + ' FALLAS'}")

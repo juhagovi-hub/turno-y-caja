@@ -69,6 +69,8 @@
       if (mode === "login") {
         var r = await sb.auth.signInWithPassword({ email: email, password: pass });
         if (r.error) throw r.error;
+        authMsg("");
+        await start(); // entra al panel sin tener que recargar la página
       } else {
         var s = await sb.auth.signUp({ email: email, password: pass, options: { emailRedirectTo: panelUrl() } });
         if (s.error) throw s.error;
@@ -108,6 +110,7 @@
   });
 
   /* ---------------- Arranque ---------------- */
+  var started = false; // evita arrancar dos veces (inicio de sesión + aviso de Supabase al mismo tiempo)
   async function start() {
     if (!sb) {
       show("login");
@@ -117,14 +120,16 @@
     }
     var sess = (await sb.auth.getSession()).data.session;
     if (!sess) { show("login"); setMode("login"); return; }
+    if (started) return;
+    started = true;
     S.user = sess.user;
     try {
       var biz = await q(sb.from("businesses").select("id,name,slug,timezone").eq("slug", CFG.businessSlug).maybeSingle());
-      if (!biz) { $("noAccessEmail").textContent = S.user.email; show("noaccess"); return; }
+      if (!biz) { started = false; $("noAccessEmail").textContent = S.user.email; show("noaccess"); return; }
       S.biz = biz;
       S.role = await rpc("my_role", { b: biz.id });
       S.isAdmin = S.role === "owner" || S.role === "admin";
-    } catch (er) { show("login"); authMsg(T.errText(er), "error"); return; }
+    } catch (er) { started = false; show("login"); authMsg(T.errText(er), "error"); return; }
 
     show("app");
     document.title = "Panel · " + S.biz.name;
@@ -139,7 +144,9 @@
     setInterval(tick, 20000);
   }
   sb && sb.auth.onAuthStateChange(function (event) {
-    if (event === "PASSWORD_RECOVERY") { show("login"); $("authForm").hidden = true; $("newPassForm").hidden = false; }
+    if (event === "PASSWORD_RECOVERY") { show("login"); $("authForm").hidden = true; $("newPassForm").hidden = false; return; }
+    // Al confirmar el correo o iniciar sesión desde otra pestaña, entra sin recargar.
+    if (event === "SIGNED_IN" && !started && $("newPassForm").hidden) setTimeout(start, 0);
   });
 
   function tick() {
