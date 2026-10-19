@@ -3,7 +3,8 @@ recorre el flujo principal del panel y falla ante cualquier error de JavaScript.
 import json, sys, threading, http.server, functools, pathlib
 from playwright.sync_api import sync_playwright
 
-WEB = pathlib.Path(__file__).resolve().parent.parent / "web"
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+WEB = ROOT / "web" if (ROOT / "web").exists() else ROOT
 PORT = 8765
 
 STUB = r"""
@@ -12,11 +13,11 @@ STUB = r"""
   var bog = new Date(Date.now() - 5*3600e3); var today = bog.toISOString().slice(0,10);
   var DB = {
     businesses: [{id:"b1", name:"Barbería Tierra Linda", slug:"tierra-linda", timezone:"America/Bogota"}],
-    services: [{id:"s1", name:"Corte", price:25000, duration_min:35, active:true, description:"", created_at:now},
+    services: [{id:"s1", name:"Corte", price:25000, founder_price:20000, duration_min:35, active:true, description:"", created_at:now},
                {id:"s2", name:"Corte y barba", price:32000, duration_min:45, active:true, description:"", created_at:now}],
-    turns: [{id:"t1", turn_number:1, display_name:"Julio Gómez", client_id:"c1", client_type:"recurrente", status:"atendiendo", arrived_at:now, started_at:now, barber_id:null, clients:{identifier:"3164893957"}},
+    turns: [{id:"t1", turn_number:1, display_name:"Julio Gómez", client_id:"c1", client_type:"recurrente", status:"atendiendo", arrived_at:now, started_at:now, barber_id:null, clients:{identifier:"3164893957", tier:"fundador"}},
             {id:"t2", turn_number:2, display_name:"<img src=x onerror=window.__xss=1>", client_id:null, client_type:"sin_id", status:"esperando", arrived_at:now, started_at:null, barber_id:null, clients:null},
-            {id:"t4", turn_number:4, display_name:"Andrés Mina", client_id:"c2", client_type:"recurrente", status:"esperando", arrived_at:now, started_at:null, barber_id:null, clients:{identifier:"3005551234"}},
+            {id:"t4", turn_number:4, display_name:"Andrés Mina", client_id:"c2", client_type:"recurrente", status:"esperando", arrived_at:now, started_at:null, barber_id:null, clients:{identifier:"3005551234", tier:"general"}},
             {id:"t5", turn_number:5, display_name:"Brayan", client_id:null, client_type:"nuevo", status:"esperando", arrived_at:now, started_at:null, barber_id:null, clients:null}],
     sales: [{id:"v1", status:"valida", client_id:"c1", client_name:"Julio Gómez", client_type:"nuevo", service_name:"Corte", list_price:25000, discount:0, amount:25000, tip:0,
              completed_at:now, started_at:now, arrived_at:now, local_date:today, local_hour:16, local_dow:4, void_reason:null, sale_payments:[{method:"efectivo", amount:25000}]},
@@ -78,7 +79,7 @@ STUB = r"""
     add_turn: {id:"t3", turn_number:3, display_name:"Ana"},
     checkout: {id:"v3", service_name:"Corte", amount:25000, tip:0},
     start_turn: {}, back_to_waiting: {}, retire_turn: {}, void_sale: {}, save_service: {}, invite_member: null,
-    import_backup: {sales:3, clients:1, services:2, skipped:0}, update_client_name: {}
+    import_backup: {sales:3, clients:1, services:2, skipped:0}, update_client_name: {}, set_client_tier: {}
   };
   window.supabase = { createClient: function(){ return {
     auth: { getSession: function(){ return Promise.resolve({data:{session:{user:{id:"u1", email:"juhagovi@gmail.com"}}}}); },
@@ -124,7 +125,7 @@ with sync_playwright() as p:
         res = page.inner_text("#myTurnResult")
         check("1 persona" in res and "min" in res, f"[{width}px] Pantalla pública: 'mi turno' calcula personas y minutos ({res})")
         check(page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), f"[{width}px] Pantalla pública: sin desplazamiento horizontal")
-        page.screenshot(path=str(WEB.parent / f"web-tests/publica-{width}.png"), full_page=True)
+        page.screenshot(path=str(ROOT / f"web-tests/publica-{width}.png"), full_page=True)
 
         # Panel
         page.goto(f"http://127.0.0.1:{PORT}/panel.html"); page.wait_for_timeout(900)
@@ -132,23 +133,26 @@ with sync_playwright() as p:
         check(page.evaluate("window.__xss") is None, f"[{width}px] Panel: un nombre con código no se ejecuta")
         check("$58.000" in page.inner_text("#statToday"), f"[{width}px] Panel: caja de hoy suma servicios + propinas ($58.000)")
         check("$33.000" in page.inner_text("#statToday"), f"[{width}px] Panel: transferencia sumada en su método")
+        check("fundador" in page.inner_text("#queueList").lower(), f"[{width}px] Panel: la fila marca al cliente fundador")
+        check(page.locator('[data-a="tier"]').count() >= 2, f"[{width}px] Panel: el administrador ve el botón para marcar o quitar fundador")
         page.click('[data-a="openCo"]'); page.wait_for_timeout(100)
+        check("$20.000" in page.inner_text('.svc-chip[data-svc="s1"]'), f"[{width}px] Panel: el cliente fundador ve la tarifa fundador en el servicio")
         page.click('.svc-chip[data-svc="s2"]'); page.wait_for_timeout(100)
         check(page.input_value(".co-price") == "32000", f"[{width}px] Panel: tocar el servicio pone su precio")
         page.click('.svc-chip[data-svc="s1"]'); page.wait_for_timeout(100)
         page.fill(".co-tip", "2000"); page.wait_for_timeout(100)
-        check("$27.000" in page.inner_text(".co-total-val"), f"[{width}px] Panel: total a recibir = precio + propina")
+        check("$22.000" in page.inner_text(".co-total-val"), f"[{width}px] Panel: total fundador = tarifa fundador + propina ($20.000 + $2.000)")
         page.click('.method-btn[data-method="transferencia"]')
         page.click('[data-a="confirmCo"]'); page.click('[data-a="confirmCo"]', timeout=500, force=True, no_wait_after=True) if page.is_visible('[data-a="confirmCo"]') else None
         page.wait_for_timeout(400)
         calls = page.evaluate("window.__calls.filter(c => c[0]==='checkout')")
         check(len(calls) == 1, f"[{width}px] Panel: doble clic en cobrar envía un solo cobro ({len(calls)})")
-        check(calls and calls[0][1]["p_method"] == "transferencia" and calls[0][1]["p_tip"] == 2000 and calls[0][1]["p_service"] == "s1", f"[{width}px] Panel: el cobro lleva servicio, propina y método")
+        check(calls and calls[0][1]["p_method"] == "transferencia" and calls[0][1]["p_tip"] == 2000 and calls[0][1]["p_service"] == "s1" and calls[0][1]["p_discount"] == 0, f"[{width}px] Panel: el cobro lleva servicio, propina y método (la tarifa fundador la aplica el servidor)")
         page.fill("#nameInput", "Ana"); page.click("#addBtn"); page.wait_for_timeout(300)
         check(any(c[0] == "add_turn" for c in page.evaluate("window.__calls")), f"[{width}px] Panel: agregar a la fila llama a la base de datos")
         check(page.is_visible("#secEquipo"), f"[{width}px] Panel: el dueño ve Equipo y Respaldo")
         check(page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), f"[{width}px] Panel: sin desplazamiento horizontal")
-        page.screenshot(path=str(WEB.parent / f"web-tests/panel-{width}.png"), full_page=True)
+        page.screenshot(path=str(ROOT / f"web-tests/panel-{width}.png"), full_page=True)
         check(not errors, f"[{width}px] Sin errores de JavaScript {errors}")
         page.close()
     browser.close()

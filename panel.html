@@ -97,7 +97,7 @@
 
     <div class="panel" id="secServicios">
       <h2>Servicios y tarifas</h2>
-      <p class="hint">Guarda aquí cada servicio con su precio una sola vez. Al cobrar solo tocas el servicio y el precio se pone solo. Cambiar una tarifa no altera las ventas pasadas, y un servicio desactivado deja de aparecer al cobrar pero sigue en el historial.</p>
+      <p class="hint">Guarda aquí cada servicio con su precio una sola vez. Al cobrar solo tocas el servicio y el precio se pone solo. La tarifa fundador (opcional) es un precio menor para los clientes que un administrador marque como fundadores: se aplica sola al cobrar. Cambiar una tarifa no altera las ventas pasadas, y un servicio desactivado deja de aparecer al cobrar pero sigue en el historial.</p>
       <div class="list" id="servicesList"></div>
       <div data-admin class="list">
         <h3>Nuevo servicio</h3>
@@ -105,6 +105,7 @@
           <label class="field name">Nombre<input type="text" id="svcNameInput" placeholder="ej. Corte y barba"></label>
           <label class="field">Precio (COP)<input type="number" id="svcPriceInput" inputmode="numeric" min="0" step="1000"></label>
           <label class="field">Duración (min)<input type="number" id="svcDurInput" inputmode="numeric" min="0" step="5" placeholder="opcional"></label>
+          <label class="field">Tarifa fundador (COP)<input type="number" id="svcFounderInput" inputmode="numeric" min="0" step="1000" placeholder="opcional"></label>
           <div class="actions"><button type="button" class="btn btn-ghost btn-small" id="svcAddBtn">+ Agregar servicio</button></div>
         </div>
         <p class="form-error" id="svcError"></p>
